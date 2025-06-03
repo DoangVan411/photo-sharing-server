@@ -1,5 +1,4 @@
 const express = require('express');
-const session = require('express-session');
 const app = express();
 require("dotenv").config();
 const bcrypt = require('bcrypt')
@@ -11,6 +10,7 @@ const Photo = require('./model/Photo')
 const Comment = require('./model/Comment')
 const multer = require('multer');
 const path = require('path');
+const jwt = require('jsonwebtoken');
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("Connect successfully"))
@@ -20,20 +20,25 @@ app.use(cors({
   origin: 'http://localhost:3000',
   credentials: true
 }))
+
 app.use(express.json());
-app.use(session({
-  secret: process.env.SECRET_KEY,
-  resave: false,
-  saveUninitialized: false,
-  name: 'connect.sid',
-  cookie: { 
-    secure: false,
-    httpOnly: false,
-    maxAge: 24 * 60 * 60 * 1000,
-    sameSite: 'lax',
-    domain: 'localhost'
+
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
   }
-}));
+
+  jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key', (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid token' });
+    }
+    req.user = user;
+    next();
+  });
+};
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -64,19 +69,26 @@ app.post('/admin/login', async (req, res) => {
     if (!isMatch) {
       return res.status(400).send({ error: 'Incorrect password' })
     }
-    req.session.user_id = user._id;
-    req.session.save((err) => {
-      if (err) {
-        console.log('Session save error:', err);
-        return res.status(500).send({ error: 'Session save failed' });
-      }
 
-      res.send({
+    const token = jwt.sign(
+      { 
         _id: user._id,
         login_name: user.login_name,
         first_name: user.first_name,
         last_name: user.last_name
-      });
+      },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      token,
+      user: {
+        _id: user._id,
+        login_name: user.login_name,
+        first_name: user.first_name,
+        last_name: user.last_name
+      }
     });
   } catch (err) {
     res.status(500).send({ error: 'Server error' });
@@ -120,20 +132,15 @@ app.get('/users/:userId', async (req, res) => {
   }
 });
 
-app.post('/photos/new', upload.single('image'), async (req, res) => {
+app.post('/photos/new', authenticateToken, upload.single('image'), async (req, res) => {
   try {
-    console.log(req.file)
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    if (!req.session.user_id) {
-      return res.status(401).json({ error: 'Please login to upload photo' });
-    }
-
     const newPhoto = new Photo({
       filename: req.file.filename,
-      userId: req.session.user_id
+      userId: req.user._id
     });
 
     await newPhoto.save();
@@ -153,12 +160,8 @@ app.post('/photos/new', upload.single('image'), async (req, res) => {
   }
 });
 
-app.post('/commentsOfPhoto/:photo_id', async (req, res) => {
+app.post('/commentsOfPhoto/:photo_id', authenticateToken, async (req, res) => {
   try {
-    if (!req.session.user_id) {
-      return res.status(401).json({ error: 'Please login to comment' });
-    }
-
     const { comment } = req.body;
     const photo_id = req.params.photo_id;
 
@@ -173,13 +176,11 @@ app.post('/commentsOfPhoto/:photo_id', async (req, res) => {
 
     const newComment = new Comment({
       comment: comment.trim(),
-      user: req.session.user_id,
+      user: req.user._id,
       photo_id: photo_id
     });
 
     await newComment.save();
-
-    // Populate user information before sending response
     await newComment.populate('user', 'first_name last_name');
 
     res.status(201).json({
@@ -196,7 +197,6 @@ app.post('/commentsOfPhoto/:photo_id', async (req, res) => {
         photo_id: newComment.photo_id
       }
     });
-
   } catch (error) {
     console.error('Error creating comment:', error);
     res.status(500).json({ error: 'Server error when creating comment' });
@@ -246,7 +246,6 @@ app.get('/photos/user/:userId', async (req, res) => {
       },
       photos: photosWithComments
     });
-
   } catch (error) {
     console.error('Error fetching photos and comments:', error);
     res.status(500).json({ error: 'Server error when fetching data' });
@@ -280,7 +279,6 @@ app.post('/user', async (req, res) => {
 
     await newUser.save();
 
-    // Trả về thông tin user (không bao gồm password)
     res.status(201).send({
       _id: newUser._id,
       login_name: newUser.login_name,
