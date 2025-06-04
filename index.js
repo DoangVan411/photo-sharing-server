@@ -102,8 +102,8 @@ app.post("/admin/login", async (req, res) => {
   }
 });
 
-app.post('/admin/logout', authenticateToken, (req, res) => {
-  res.json({ message: 'Logged out successfully' });
+app.post("/admin/logout", authenticateToken, (req, res) => {
+  res.json({ message: "Logged out successfully" });
 });
 
 app.get("/user/list", async (req, res) => {
